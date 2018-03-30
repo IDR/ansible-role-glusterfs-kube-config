@@ -2,7 +2,7 @@
   "clusters": [
     {
       "nodes": [
-        {% for machine in groups['nodes'] %}
+        {% for machine in groups[gluster_k8s_storage_group] %}
         {
           "node": {
             "hostnames": {
@@ -16,7 +16,7 @@
             "zone": 1
           },
           "devices": [
-            "/dev/{{ spare_disk_dev }}"
+            "{{ gluster_k8s_storage_device }}"
           ]
         }{% if not loop.last %},{% endif %}
         {% endfor %}

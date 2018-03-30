@@ -1,4 +1,7 @@
 ---
+- name: Set path envionrment variable if necessary
+  set_fact:
+    _gluster_k8s_environment: "{{ (gluster_k8s_add_bin_path | length > 0) | ternary({'PATH': gluster_k8s_add_bin_path + ':' + ansible_env.PATH}, {}) }}"
 
 - name: Install git
   become: true
@@ -7,126 +10,153 @@
     name: git
     state: present
 
-- name: Template endpoints json
-  template:
-    src: glusterfs-endpoints.json.j2
-    dest: /home/centos/glusterfs-endpoints.json
+- name: Load required dm modules
+  become: yes
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  with_items: "{{ gluster_k8s_kernel_modules }}"
 
-- name: Template service json
+- name: load required dm modules on startup
+  become: yes
   template:
-    src: glusterfs-service.json.j2
-    dest: /home/centos/glusterfs-service.json
+    src: glusterfs-dm.conf.j2
+    dest: /etc/modules-load.d/glusterfs-dm.conf
 
-- name: Template volume yaml
-  template:
-    src: glusterfs-volumes.yaml.j2
-    dest: /home/centos/glusterfs-volumes.yaml
-
-- name: Template namespace yaml
-  template:
-    src: glusterfs-namespace.yaml.j2
-    dest: /home/centos/glusterfs-namespace.yaml
-
-- name: Get list of namespaces
-  shell: >
-    kubectl get namespaces -o go-template='{% raw %}{{range .items}}{{.metadata.name}}{{"\n"}}{{end}}{% endraw %}'
-  register: namespaces_list
+- name: Check if namespace exists
+  command: >
+    kubectl get ns {{ gluster_k8s_namespace }}
+  register: _gluster_k8s_namespace_check
+  failed_when: _gluster_k8s_namespace_check.rc not in [0, 1]
   changed_when: False
+  environment: "{{ _gluster_k8s_environment }}"
 
 - name: Create gluster namespace if necessary
-  shell: >
-    kubectl create -f /home/centos/glusterfs-namespace.yaml
-  when: "'gluster' not in namespaces_list.stdout_lines"
+  command: >
+    kubectl create namespace {{ gluster_k8s_namespace }}
+  when: _gluster_k8s_namespace_check.rc == 1
+  environment: "{{ _gluster_k8s_environment }}"
+  run_once: true
 
 - name: Clone gluster-kubernetes
   git:
-    repo: https://github.com/gluster/gluster-kubernetes.git
-    dest: /home/centos/gluster-kubernetes
+    repo: "{{ gluster_kubernetes_repo }}"
+    dest: ~/gluster-kubernetes
     version: "{{ gluster_kubernetes_version }}"
     force: yes
-
-- name: Change heketi image tag (hackish sed, I know. I know. But, as a stop gap.)
-  shell: >
-    find . -type f -print0 | xargs -0 sed -i 's|heketi/heketi:dev|{{ heketi_image_name }}|g'
-  args:
-    chdir: /home/centos/gluster-kubernetes
-  when: "heketi_image_name != 'heketi/heketi:dev'"
 
 - name: Template GlusterFS gk-deploy topology json
   template:
     src: glusterfs-topology.json.j2
-    dest: /home/centos/gluster-kubernetes/deploy/topology.json
+    dest: ~/gluster-kubernetes/deploy/topology.json
 
 - name: Download heketi cli tarball
   get_url:
-    url: https://github.com/heketi/heketi/releases/download/v4.0.0/heketi-v4.0.0.linux.amd64.tar.gz
-    dest: /home/centos/heketi.tar.gz
+    url: https://github.com/heketi/heketi/releases/download/v5.0.1/heketi-client-v5.0.1.linux.amd64.tar.gz
+    checksum: "sha256:748ed1b3bac916747a53ba95639b582cf31952d320b01bbbab732f12271c3638"
+    dest: ~/
 
 - name: Create directory for extraction of tarball
   file:
-    path: /home/centos/heketi
+    path: ~/heketi
     state: directory
 
 - name: Extract heketi cli tarball
   unarchive:
-    src: /home/centos/heketi.tar.gz
-    dest: /home/centos/heketi
+    src: ~/heketi-client-v5.0.1.linux.amd64.tar.gz
+    dest: ~/heketi
     remote_src: yes
 
 - name: Copy heketi-cli bin into place
   become: true
   become_user: root
-  shell: >
-    cp /home/centos/heketi/heketi/heketi-cli /usr/local/bin/heketi-cli
+  command: >
+    cp ~/heketi/heketi-client/bin/heketi-cli /usr/local/bin/heketi-cli
   args:
     creates: /usr/local/bin/heketi-cli
 
 - name: Deploy GlusterFS on Kubernetes with gk-deploy (note -- this is coffee break worthy, it takes a while)
-  shell: >
-    ./gk-deploy -n gluster -w {{ gk_deploy_wait_seconds }} -g -y
+  command: >
+    ./gk-deploy
+    --namespace {{ gluster_k8s_namespace }}
+    --deploy-gluster
+    --wait {{ gluster_k8s_wait_seconds }}
+    --admin-key {{ gluster_k8s_admin_key }}
+    --user-key {{ gluster_k8s_user_key }}
+    --yes
   args:
-    chdir: /home/centos/gluster-kubernetes/deploy
-    creates: /home/centos/.gk-deployed
+    chdir: ~/gluster-kubernetes/deploy
+    creates: ~/gk-deployed.flag
+  environment: "{{ _gluster_k8s_environment }}"
+  run_once: true
 
+# WARNING: race condition here: gk-deploy might complete but this flag file
+# might not be created if the playbook is interrupted for some reason
 - name: Mark that gk-deploy is complete
-  file:
-    path: /home/centos/.gk-deployed
-    state: directory
+  shell: date > ~/gk-deployed.flag
+  args:
+    creates: ~/gk-deployed.flag
 
 - name: Query the API for the heketi IP address
-  shell: >
-    curl -s localhost:{{ kubectl_proxy_port }}/api/v1/namespaces/gluster/services/heketi | jq -r .spec.clusterIP
-  register: heketi_ipaddress_raw
+  command: >
+    kubectl get service heketi
+    --namespace={{ gluster_k8s_namespace }}
+    -o jsonpath='{.spec.clusterIP}:{.spec.ports[?(@.name=="heketi")].port}'
+  register: _gluster_k8s_heketi_address_raw
+  changed_when: False
+  environment: "{{ _gluster_k8s_environment }}"
+  run_once: true
+
+- name: Set the heketi IP
+  set_fact:
+    _gluster_k8s_heketi_address: "{{ _gluster_k8s_heketi_address_raw.stdout }}"
+  run_once: true
 
 - name: Fail when there's no IP address (this could use grooming)
   fail:
     msg: "That sure doesn't look like an IP address in the heketi service response from the kube api"
-  when: heketi_ipaddress_raw.stdout == "null"
+  when: '_gluster_k8s_heketi_address | length < 3'
+  run_once: true
 
 - debug:
-    msg: "The heketi ip address is: {{ heketi_ipaddress_raw.stdout }}"
+    msg: "The heketi ip address is: {{ _gluster_k8s_heketi_address }}"
+  run_once: true
 
-- name: Set the heketi IP
-  set_fact:
-    heketi_ip: "{{ heketi_ipaddress_raw.stdout }}"
+- name: Check heketi db storage was setup
+  command: >
+    heketi-cli -s {{ gluster_k8s_storageclass_resturl }}
+    --user admin --secret {{ gluster_k8s_admin_key | quote }}
+    volume list
+  register: _gluster_k8s_heketi_cli_volumes
+  changed_when: False
+  failed_when: "'Name:heketidbstorage' not in _gluster_k8s_heketi_cli_volumes.stdout"
+  environment: "{{ _gluster_k8s_environment }}"
+  run_once: true
 
 - name: Template the storage class yaml
   template:
     src: glusterfs-storageclass.yaml.j2
-    dest: /home/centos/glusterfs-storageclass.yaml
+    dest: ~/glusterfs-storageclass.yaml
+  register: _gluster_k8s_storageclass
 
-- name: List the storage classes
-  shell: >
-    kubectl get storageclasses -o=go-template='{% raw %}{{range .items}}{{.metadata.name}}{{"\n"}}{{end}}{% endraw %}'
-  register: storageclass_list
+- name: Delete the storage class if the definition changed
+  command: >
+    kubectl delete storageclass {{ gluster_k8s_storageclass_name }}
+  when: '_gluster_k8s_storageclass | changed'
+  environment: "{{ _gluster_k8s_environment }}"
+  run_once: true
+
+- name: Check if storage class exists
+  command: >
+    kubectl get storageclass {{ gluster_k8s_storageclass_name }}
+  register: _gluster_k8s_storageclass_check
+  failed_when: _gluster_k8s_storageclass_check.rc not in [0, 1]
   changed_when: False
+  environment: "{{ _gluster_k8s_environment }}"
 
 - name: Create the storage class
-  shell: >
-    kubectl create -f /home/centos/glusterfs-storageclass.yaml
-  when: (gluster_storageclasses | json_query('[*].metadata.name')) | difference(storageclass_list.stdout_lines) | count > 0
-  ignore_errors: true
-
-# Get heketi URL.
-# [centos@kube-master ~]$ kubectl get svc --namespace=gluster | grep 8080 | awk '{print $2}'
-# 10.105.179.111
+  command: >
+    kubectl create -f ~/glusterfs-storageclass.yaml
+  when: _gluster_k8s_storageclass_check.rc == 1
+  environment: "{{ _gluster_k8s_environment }}"
+  run_once: true

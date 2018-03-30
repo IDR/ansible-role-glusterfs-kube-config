@@ -1,66 +1,32 @@
 ---
-gk_deploy_wait_seconds: 900
-gluster_volumes:
-  - metadata:
-      name: "gluster-volume-1"
-    spec:
-      capacity:
-        storage: "600Mi"
-      reclaim_policy: "Delete"
-      storage_class_name: "storage"
-      glusterfs:
-        endpoints: "glusterfs-cluster"
-        path: "glustervol1"
-        read_only: false
-  - metadata:
-      name: "gluster-volume-2"
-    spec:
-      capacity:
-        storage: "300Mi"
-      reclaim_policy: "Delete"
-      storage_class_name: "storage"
-      glusterfs:
-        endpoints: "glusterfs-cluster"
-        path: "glustervol2"
-        read_only: false
-  - metadata:
-      name: "gluster-volume-3"
-    spec:
-      capacity:
-        storage: "300Mi"
-      reclaim_policy: "Delete"
-      storage_class_name: "storage"
-      glusterfs:
-        endpoints: "glusterfs-cluster"
-        path: "glustervol3"
-        read_only: false
-  - metadata:
-      name: "gluster-volume-4"
-    spec:
-      capacity:
-        storage: "100Mi"
-      reclaim_policy: "Delete"
-      storage_class_name: "storage"
-      glusterfs:
-        endpoints: "glusterfs-cluster"
-        path: "glustervol4"
-        read_only: false
-  - metadata:
-      name: "gluster-volume-5"
-    spec:
-      capacity:
-        storage: "100Mi"
-      reclaim_policy: "Delete"
-      storage_class_name: "storage"
-      glusterfs:
-        endpoints: "glusterfs-cluster"
-        path: "glustervol5"
-        read_only: false
+gluster_kubernetes_version: 0b27a924d4943534775e194900c7a8143e1c15ca
+gluster_kubernetes_repo: "https://github.com/gluster/gluster-kubernetes.git"
 
-gluster_storageclasses:
-  - metadata:
-      name: gluster
-    parameters:
-      resturl: "{{ heketi_ip }}:8080"
-      restuser: "this_is_unused"
-      restuserkey: "boy_thats_pretty_insecure"
+gluster_k8s_namespace: gluster
+
+gluster_k8s_storage_group: k8s-cluster
+
+gluster_k8s_storage_device: /dev/vdb
+
+gluster_k8s_add_bin_path: ''
+
+gluster_k8s_wait_seconds: 900
+
+gluster_k8s_admin_key: admin-key
+gluster_k8s_user_key: user-key
+
+gluster_k8s_storageclass_name: gluster
+gluster_k8s_storageclass_resturl: "http://{{ _gluster_k8s_heketi_address }}"
+gluster_k8s_storageclass_restuser: admin
+gluster_k8s_storageclass_restuserkey: "{{ gluster_k8s_admin_key }}"
+
+
+######################################################################
+# Expert users only!
+######################################################################
+
+# Required kernel modules for Gluster Heketi
+gluster_k8s_kernel_modules:
+- dm_snapshot
+- dm_mirror
+- dm_thin_pool
