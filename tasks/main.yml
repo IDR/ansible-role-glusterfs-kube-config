@@ -139,13 +139,6 @@
     dest: ~/glusterfs-storageclass.yaml
   register: _gluster_k8s_storageclass
 
-- name: Delete the storage class if the definition changed
-  command: >
-    kubectl delete storageclass {{ gluster_k8s_storageclass_name }}
-  when: '_gluster_k8s_storageclass | changed'
-  environment: "{{ _gluster_k8s_environment }}"
-  run_once: true
-
 - name: Check if storage class exists
   command: >
     kubectl get storageclass {{ gluster_k8s_storageclass_name }}
@@ -154,9 +147,16 @@
   changed_when: False
   environment: "{{ _gluster_k8s_environment }}"
 
+- name: Delete the storage class if the definition changed
+  command: >
+    kubectl delete storageclass {{ gluster_k8s_storageclass_name }}
+  when: '(_gluster_k8s_storageclass | changed) and (_gluster_k8s_storageclass_check.rc == 0)'
+  environment: "{{ _gluster_k8s_environment }}"
+  run_once: true
+
 - name: Create the storage class
   command: >
     kubectl create -f ~/glusterfs-storageclass.yaml
-  when: _gluster_k8s_storageclass_check.rc == 1
+  when: '(_gluster_k8s_storageclass | changed) or (_gluster_k8s_storageclass_check.rc == 1)'
   environment: "{{ _gluster_k8s_environment }}"
   run_once: true
